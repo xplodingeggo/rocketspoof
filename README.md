@@ -3,13 +3,13 @@
 
 A Linux/Windows CLI tool that changes the display name Rocket League shows for you, without modifying or injecting into the game itself. It works by intercepting your own network traffic to Epic/Psyonix's servers with [mitmproxy](https://mitmproxy.org/) and rewriting your `displayName` in the responses before they reach the game. Respect to claude for most of this. I did test this myself and test it works so like 6/10 vibecode sesh
 
-This is a from-scratch Linux-compatible reimplementation of the traffic-interception approach used by tools like RL-Spoofer[https://github.com/Kakapo-Labs/RL-Spoofer-GUI], stripped down to just the proxy logic (no GUI, no OS-specific tray/startup dependencies).
+This is a linux-compatible version of the traffic-interception approach used by tools like RL-Spoofer[https://github.com/Kakapo-Labs/RL-Spoofer-GUI], with just a CLI instead of a gui which can break across different distros/platforms
 
 ## How it works
 
 1. Rocket League fetches your account data from Epic's servers early in the login flow, including a JSON blob with your `displayName`.
 2. This tool runs a local [mitmproxy](https://mitmproxy.org/) instance that watches for that specific response and rewrites `displayName` before it reaches the game.
-3. Rocket League caches that value for the session, so your spoofed name sticks once it's been intercepted once.
+3. Rocket League caches that value for the session, so your spoofed name sticks once it's been intercepted once, it will help to keep the proxy active during gameplay though since sometimes it does update in some places
 
 ## Dependencies
 
@@ -48,7 +48,7 @@ The script is fully interactive — it'll prompt you for:
 - **Name to spoof to**
 - **Auto-proxy** (yes/no) — automatically routes Rocket League's traffic through the proxy without you toggling anything manually
 - **Debug mode** (yes/no) — verbose logging of every request/response, not just spoofed ones
-- Once it's running, open rocket league and **if you get a failed to connect to EOS error simply disable the proxy and reconnect. You will keep your spoofed name but be able to use EOS.** I can probably fix it somehow but idk how yet
+- Once it's running, open rocket league and **if you get a failed to connect to EOS error simply disable the proxy and reconnect to EOS. You will keep your spoofed name but be able to use EOS. I recommend you turn the proxy on again after connecting with the same name so that it stays permanently** I can probably fix it somehow but idk how yet
 
 ### Auto-proxy mode
 
@@ -58,7 +58,7 @@ sudo python3 rl_name_spoof.py
 ```
 It watches for a running `RocketLeague` process and enables/disables the redirect automatically around it.
 
-**Windows:** just run normally — it toggles the system proxy setting via the registry automatically around `RocketLeague.exe`.
+**Windows:** just run it normally — it toggles the system proxy setting via the registry automatically around `RocketLeague.exe`.
 ```powershell
 python rl_name_spoof.py
 ```
