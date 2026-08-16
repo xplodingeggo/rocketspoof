@@ -36,6 +36,7 @@ around Enter-key prompts instead of automatically around the process.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -53,7 +54,27 @@ MAX_NAME_LENGTH = 32
 MITM_CA_CERT = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
 NFT_TABLE_NAME = "rl_spoof"          # our own isolated nftables table, easy cleanup
 PROXY_USER = "rlspoof-mitm"          # dedicated unprivileged user mitmproxy runs as
-DEBUG_MODE = False                   # toggled by prompt in main()
+DEBUG_MODE = False                   # toggled by prompt in main() or config file
+
+CONFIG_FILE = Path("/etc/rl-name-spoof.conf")
+
+
+def load_config_file() -> dict | None:
+    """
+    Reads a simple KEY=VALUE config file for non-interactive (systemd
+    service) use. Returns None if the file doesn't exist, so the caller
+    falls back to interactive prompts.
+    """
+    if not CONFIG_FILE.exists():
+        return None
+    config = {}
+    for line in CONFIG_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        config[key.strip().upper()] = value.strip()
+    return config
 
 
 # --------------------------------------------------------------------------
@@ -418,21 +439,42 @@ def stream_subprocess_output(proc: subprocess.Popen) -> None:
 def main() -> None:
     global DEBUG_MODE
 
-    print("=== Rocket League Name Spoofer ===\n")
+    # Systemd sends SIGTERM to stop a service. Turn it into a KeyboardInterrupt
+    # so the existing Ctrl+C cleanup path (removing nftables rules, killing the
+    # mitmdump subprocess) runs the same way either way.
+    def handle_sigterm(signum, frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM, handle_sigterm)
 
-    new_name = input("Enter the name to spoof to: ").strip()
-    if not new_name:
-        print("No name entered, exiting.")
-        sys.exit(1)
+    config = load_config_file()
+
+    if config is not None:
+        # Non-interactive (systemd service) mode.
+        print(f"=== Rocket League Name Spoofer (config: {CONFIG_FILE}) ===\n")
+        new_name = config.get("NAME", "").strip()
+        if not new_name:
+            log(f"NAME not set in {CONFIG_FILE}, exiting.", level="ERROR")
+            sys.exit(1)
+        auto_proxy = config.get("AUTO_PROXY", "true").strip().lower() not in ("false", "0", "no")
+        DEBUG_MODE = config.get("DEBUG", "false").strip().lower() in ("true", "1", "yes")
+    else:
+        # Interactive mode.
+        print("=== Rocket League Name Spoofer ===\n")
+
+        new_name = input("Enter the name to spoof to: ").strip()
+        if not new_name:
+            print("No name entered, exiting.")
+            sys.exit(1)
+
+        auto_proxy = prompt_yes_no("Enable auto-proxy (automatically route Rocket League's "
+                                    "traffic through the proxy without you toggling anything)?",
+                                    default=True)
+        DEBUG_MODE = prompt_yes_no("Enable debug mode (verbose logging, including every "
+                                    "request/response, not just spoofed ones)?", default=False)
+
     if len(new_name) > MAX_NAME_LENGTH:
         print(f"Name too long, truncating to {MAX_NAME_LENGTH} chars.")
         new_name = new_name[:MAX_NAME_LENGTH]
-
-    auto_proxy = prompt_yes_no("Enable auto-proxy (automatically route Rocket League's "
-                                "traffic through the proxy without you toggling anything)?",
-                                default=True)
-    DEBUG_MODE = prompt_yes_no("Enable debug mode (verbose logging, including every "
-                                "request/response, not just spoofed ones)?", default=False)
 
     print()
 
