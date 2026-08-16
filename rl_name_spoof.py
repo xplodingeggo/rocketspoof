@@ -46,7 +46,7 @@ from pathlib import Path
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
 
-TARGET_DOMAINS = ["epicgames.dev", "epicgames.com", "psyonix.com", "live.psynet.gg"]
+TARGET_DOMAIN = "api.epicgames.dev"  # the one domain that actually serves displayName
 REQUIRED_KEYS = ["accountId", "displayName", "preferredLanguage", "linkedAccounts", "cabinedMode"]
 MAX_NAME_LENGTH = 32
 
@@ -185,23 +185,48 @@ def get_proxy_uid() -> int | None:
 # Linux: nftables transparent redirect (isolated table, easy cleanup)
 # --------------------------------------------------------------------------
 
-def nft_rules_up(port: int, proxy_uid: int) -> bool:
+def resolve_target_ips(domain: str) -> list[str]:
+    """
+    Resolve every A record for the target domain so we can scope the
+    nftables redirect to ONLY those IPs, instead of all outbound 443
+    traffic. This is what lets everything else (pinned auth endpoints,
+    telemetry, etc.) go direct and untouched automatically, with no
+    timing games or exclusion lists needed.
+    """
+    import socket
+    try:
+        infos = socket.getaddrinfo(domain, 443, socket.AF_INET, socket.SOCK_STREAM)
+        ips = sorted({info[4][0] for info in infos})
+        log(f"Resolved {domain} -> {', '.join(ips)}", level="INFO")
+        return ips
+    except socket.gaierror as e:
+        log(f"Failed to resolve {domain}: {e}", level="ERROR")
+        return []
+
+
+def nft_rules_up(port: int, proxy_uid: int, target_ips: list[str]) -> bool:
     """
     Creates our own nftables table (kept separate from any of your existing
     rules) with:
       - an exclusion for traffic whose *socket owner* is the dedicated
-        mitmproxy user (so mitmproxy's own outbound connections aren't
-        redirected back into itself)
-      - a redirect of everyone else's outbound TCP 443 to the local proxy
-        port (this is what catches Rocket League, since it runs as your
-        normal user)
+        mitmproxy user (so mitmproxy's own outbound connections to the
+        same target IPs aren't redirected back into itself)
+      - a redirect of outbound TCP 443 traffic, but ONLY to target_ips
+        (the resolved IPs for the one domain we actually need to
+        intercept) — everything else, including pinned auth endpoints,
+        is never touched by this rule at all.
     """
+    if not target_ips:
+        log("No target IPs to redirect — refusing to set up an empty rule.", level="ERROR")
+        return False
+
+    ip_set = ", ".join(target_ips)
     script = textwrap.dedent(f"""
         table ip {NFT_TABLE_NAME} {{
             chain output {{
                 type nat hook output priority 0;
                 meta skuid {proxy_uid} return
-                tcp dport 443 redirect to :{port}
+                ip daddr {{ {ip_set} }} tcp dport 443 redirect to :{port}
             }}
         }}
     """).strip()
@@ -214,8 +239,8 @@ def nft_rules_up(port: int, proxy_uid: int) -> bool:
         if result.returncode != 0:
             log(f"nft rule setup failed: {result.stderr.strip()}", level="ERROR")
             return False
-        log(f"nftables: redirecting outbound TCP 443 -> 127.0.0.1:{port} "
-            f"(excluding uid {proxy_uid}).", level="INFO")
+        log(f"nftables: redirecting outbound TCP 443 -> 127.0.0.1:{port}, scoped to "
+            f"{ip_set} only (excluding uid {proxy_uid}).", level="INFO")
         return True
     finally:
         os.unlink(tmp.name)
@@ -296,7 +321,8 @@ def auto_manage_linux_proxy(port: int, proxy_uid: int, stop_flag: dict) -> None:
         running = is_rl_running_linux()
         if running and not was_running:
             log("Auto-proxy: RocketLeague process detected, enabling nftables redirect.", level="INFO")
-            nft_rules_up(port, proxy_uid)
+            target_ips = resolve_target_ips(TARGET_DOMAIN)
+            nft_rules_up(port, proxy_uid, target_ips)
         elif not running and was_running:
             log("Auto-proxy: RocketLeague process ended, removing nftables redirect.", level="INFO")
             nft_rules_down()
@@ -316,17 +342,17 @@ ADDON_TEMPLATE = '''
 import json
 from mitmproxy import http
 
-TARGET_DOMAINS = {target_domains!r}
+TARGET_DOMAIN = {target_domain!r}
 REQUIRED_KEYS = {required_keys!r}
 NEW_NAME = {new_name!r}
 
 class NameSpoofAddon:
     def request(self, flow: http.HTTPFlow):
-        if any(d in flow.request.pretty_host for d in TARGET_DOMAINS):
+        if TARGET_DOMAIN in flow.request.pretty_host:
             print(f"-> {{flow.request.method}} {{flow.request.pretty_host}}{{flow.request.path}}", flush=True)
 
     def response(self, flow: http.HTTPFlow):
-        target = any(d in flow.request.pretty_host for d in TARGET_DOMAINS)
+        target = TARGET_DOMAIN in flow.request.pretty_host
         content_type = flow.response.headers.get("Content-Type", "")
         if target and "application/json" in content_type:
             print(f"<- {{flow.response.status_code}} {{flow.request.pretty_host}}{{flow.request.path}} (json)", flush=True)
@@ -365,7 +391,7 @@ addons = [NameSpoofAddon()]
 
 def write_addon_file(new_name: str) -> Path:
     content = ADDON_TEMPLATE.format(
-        target_domains=TARGET_DOMAINS,
+        target_domain=TARGET_DOMAIN,
         required_keys=REQUIRED_KEYS,
         new_name=new_name,
     )
