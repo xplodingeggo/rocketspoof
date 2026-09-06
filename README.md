@@ -18,7 +18,7 @@ it will give you setup instructions for your distro and you just paste the thing
 It will prompt you for the name you want and whether to enable debug mode and stuff. just make sure you say yes to auto proxy
 
 # Systemd service setup
-This makes it so you dont need to run the script every time you want your name to be spoofed and its done automatically. Only works if your pc uses systemd services
+This makes it so you dont need to run the script every time you want your name to be spoofed and its done automatically. Only works if your pc uses systemd services. The name of the service is `rl-name-spoof`
 * Place rl-name-spoof into /opt/rl-name-spoof (create the directory)
 * create a config file called rl-name-spoof.conf in /etc/
 * put something like this in it (replace the name to what you want)
